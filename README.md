@@ -12,6 +12,10 @@ It can be incredibly tedious to dig through Etherscan to uncover all the differe
 
 ## Installation
 ```
+cp sample.env <some_name>.env
+# edit your env file to add relevant keys
+source <some_name>.env
+
 python3 -m venv ./venv && source ./venv/bin/activate
 python3 -m pip install -r requirements.txt
 python contractDependencies.py <contract_address>
