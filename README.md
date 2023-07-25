@@ -16,3 +16,11 @@ python3 -m venv ./venv && source ./venv/bin/activate
 python3 -m pip install -r requirements.txt
 python contractDependencies.py <contract_address>
 ```
+
+## Sample
+
+Running with:
+```
+python contractDependencies.py 0xAAE054B9b822554dd1D9d1F48f892B4585D3bbf0
+```
+outputs the following diagram ![ETHxRateProvider Dependency Graph](./images/ETHxRateProvider.png "ETHxRateProvider Dependency Graph")
