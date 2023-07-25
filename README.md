@@ -7,6 +7,8 @@ It can be incredibly tedious to dig through Etherscan to uncover all the differe
 * **Naive**: Find all `address`es returned by no-input functions
 * **EIP-1967 Transparent Proxy**: Get implementation contract from storage
 * **TimelockController**: Get addresses that have been granted `PROPOSER_ROLE` by examining logs
+* **Gnosis Safe + Proxy**: Get addresses of Safe `owners` and `implementation`
+* **Ethereum Name Service**: Get ENS names of addresses (if applicable)
 
 ## Installation
 ```
