@@ -1,6 +1,7 @@
 import json
 import sys
 import os
+import binascii
 
 import balpy
 from multicaller import multicaller
@@ -30,6 +31,11 @@ class Suppressor(object):
 def checksum(bal, address):
 	return(bal.web3.toChecksumAddress(address));
 
+def bytesToString(as_bytes):
+	as_hex = binascii.hexlify(as_bytes);
+	as_string = "0x" + as_hex.decode("ascii");
+	return(as_string);
+
 def bytes32ToAddress(bytes_data):
 	return("0x" + bytes_data[-40:]);
 
@@ -44,18 +50,24 @@ def etherscanApiUrlGetSourceCode(bal, address):
 def etherscanApiUrl(bal, address, url_string):
 	success = False;
 	results = None;
-	while not success:
+	max_retries = 3;
+	tries = 0;
+	while not success and tries < max_retries:
+		tries += 1;
 		try:
 			response = bal.callEtherscan(url_string);
-			results = response["result"];
-			if isinstance(results, str):
-				results = json.loads(response["result"]);
-			success = True;
+			status = response["status"];
+			if status == "1":
+				results = response["result"];
+				if isinstance(results, str):
+					results = json.loads(results);
+					success = True;
 		except KeyboardInterrupt:
 			print("Caught Ctrl+C");
 			quit();
 		except Exception as e:
 			print(e);
+			print("Attempt", tries, "of", max_retries, "for", address)
 	return(results);
 
 
@@ -109,7 +121,14 @@ def findHardCodedAddresses(source_code):
 	names = [];
 
 	for c in source_code:
-		sources = json.loads(c["SourceCode"][1:-1])["sources"]; #need to remove leading/trailing '{', '}'
+		code = c["SourceCode"];
+		sources = {};
+
+		try:
+			sources = json.loads(code[1:-1])["sources"]; #need to remove leading/trailing '{', '}'
+		except:
+			sources[0] = {"content":code};
+
 		for key in sources:
 			source = sources[key]["content"];
 			for line in source.splitlines():
@@ -118,6 +137,10 @@ def findHardCodedAddresses(source_code):
 					# get const address
 					elements = line.split(";")
 					address = elements[0].split()[-1];
+
+					# check for things like address(0x1)
+					if not address[:2] == "0x":
+						continue;
 
 					# get name of const address
 					elements = line.split("=")
@@ -131,6 +154,31 @@ def findHardCodedAddresses(source_code):
 			print("\t\t" + n, a)
 
 	return(addresses, names);
+
+def findHardCodedRoles(source_code):
+	names = [];
+	for c in source_code:
+		code = c["SourceCode"];
+		sources = {};
+		try:
+			sources = json.loads(code[1:-1])["sources"]; #need to remove leading/trailing '{', '}'
+		except:
+			sources[0] = {"content":code};
+
+		for key in sources:
+			source = sources[key]["content"];
+			for line in source.splitlines():
+				if "bytes" in line and "constant" in line and "_ROLE" in line and "keccak" in line and not "MY_ROLE" in line:
+					# get name of ROLEs
+					elements = line.split("=")
+					name = elements[0].strip().split()[-1];
+					names.append(name);
+	if len(names) > 0:
+		print("\tFound", len(names), "hardcoded ROLEs:")
+		for n in names:
+			print("\t\t" + n)
+
+	return(names);
 
 def generateEventTopic(bal, name, inputs):
 	arguments = []
@@ -257,52 +305,94 @@ def analyzeGnosisSafe(bal, contract, abi):
 
 		return(addresses, labels);
 
-def getTimelockControllerProposers(bal, contract, abi):
+def findActiveRoles(bal, contract_address, abi, source_code):
 	addresses = [];
 	labels = [];
 
-	isTimelockController = False;
-	roleGrantedAbiInputs = None;
-	roleRevokedAbiInputs = None;
-	for fn in abi:
-		if "name" in fn:
-			if fn["name"] == "TIMELOCK_ADMIN_ROLE":
-				isTimelockController = True;
-			if fn["name"] == "RoleGranted":
-				roleGrantedAbiInputs = fn["inputs"];
-			if fn["name"] == "RoleRevoked":
-				roleRevokedAbiInputs = fn["inputs"];
+	roles = findHardCodedRoles(source_code);
+	roles_by_hash = {bal.web3.sha3(text=role).hex():role for role in roles};
+	if len(roles) > 0:
+		events = ["RoleGranted", "RoleRevoked", "RoleAdminChanged"];
+		event_data = {};
+		event_abis = {e:None for e in events};
+		for fn in abi:
+			if "name" in fn:
+				if fn["name"] in events:
+					event_abis[fn["name"]] = fn["inputs"];
 
-	if isTimelockController:
-		print("\tContract is an OpenZeppelin TimelockController!");
-		grantedTopic = generateEventTopic(bal, "RoleGranted", roleGrantedAbiInputs);
-		revokedTopic = generateEventTopic(bal, "RoleRevoked", roleRevokedAbiInputs);
+		for event_name in event_abis:
+			event_abi = event_abis[event_name];
+			topic = generateEventTopic(bal, event_name, event_abi);
+			event_data[event_name] = getAllInstancesOfEvent(bal, contract_address, topic);
 
-		proposer_role = bal.web3.sha3(text="PROPOSER_ROLE").hex();
+		event_transactions_by_block = {};
+		for event_name in event_data:
+			idx = 0;
+			for event in event_data[event_name]:
+				block = int(event["blockNumber"], 16);
+				event_transactions_by_block[block] = event["transactionHash"]
 
-		proposers = [];
-		revoked_proposers = [];
-		grantedEvents = getAllInstancesOfEvent(bal, contract, grantedTopic);
-		
-		# Skipping this for now since something could be added, revoked, and added again
-		# revokedEvents = getAllInstancesOfEvent(bal, contract, revokedTopic);
-		# for e in revokedEvents:
-		# 	role = e["topics"][1]
-		# 	if role == proposer_role:
-		# 		account = e["topics"][2]
-		# 		revoked_proposers.append(account);
+		sorted_txns = list(event_transactions_by_block.keys());
+		sorted_txns.sort();
 
-		for e in grantedEvents:
-			role = e["topics"][1];
-			if role == proposer_role:
-				account = e["topics"][2];
-				if not account in revoked_proposers:
-					proposers.append(bytes32ToAddress(account));
-		print("\tFound", len(proposers), "proposers:");
-		for p in proposers:
-			print("\t\t" + p);
-		return(proposers, ["PROPOSER"]*len(proposers));
-	return([], []);
+		role_info = {
+			"roles":{role:set() for role in roles},
+			"role_admin":None
+		}
+
+		contract = bal.web3.eth.contract(address=checksum(bal, contract_address), abi=abi);
+
+		for block in sorted_txns:
+			tx_hash = event_transactions_by_block[block];
+			receipt = bal.web3.eth.getTransactionReceipt(tx_hash);
+
+			logs_by_event = {};
+			with Suppressor():
+				for event in events:
+					logs_by_event[event] = contract.events[event]().processReceipt(receipt);
+
+			role = "RoleGranted";
+			if len(logs_by_event[role]) > 0:
+				for log in logs_by_event[role]:
+					account = log.args.account;
+					role_string = bytesToString(log.args.role)
+					try:
+						role_info["roles"][roles_by_hash[role_string]].add(account);
+					except Exception as e:
+						print("\t\tRole not found:", role_string);
+			role = "RoleRevoked";
+			if len(logs_by_event[role]) > 0:
+				for log in logs_by_event[role]:
+					account = log.args.account;
+					role_string = bytesToString(log.args.role)
+					try:
+						role_info["roles"][roles_by_hash[role_string]].remove(account);
+					except Exception as e:
+						print("\t\tRole not found:", role_string);
+			'''
+			role = "RoleAdminChanged";
+			if len(logs_by_event[role]) > 0:
+				for log in logs_by_event[role]:
+					print(log)
+					role_string = bytesToString(log.args.role)
+					try:
+						print("removing", account)
+						role_info["roles"][roles_by_hash[role_string]].remove(account);
+					except Exception as e:
+						print(e);
+						print("Role not found:", role_string);
+			'''
+
+		for r in role_info["roles"]:
+			ads = list(role_info["roles"][r]);
+			addresses.extend(ads);
+			labels.extend([r] * len(ads));
+
+			print("\t\tFound", len(ads), "addresses with role", r + ":");
+			for a in ads:
+				print("\t\t\t" + a)
+
+	return(addresses, labels);
 
 def getGnosisSafeOwners(bal, contract, proxy):
 	abi = etherscanApiUrlGetAbi(bal, contract);
@@ -323,58 +413,56 @@ def getGnosisSafeOwners(bal, contract, proxy):
 				event_abis[fn["name"]] = fn["inputs"];
 
 	if isGnosisSafe:
-		events = {};
 		for event_name in event_abis:
 			event_abi = event_abis[event_name];
 			topic = generateEventTopic(bal, event_name, event_abi);
 			event_data[event_name] = getAllInstancesOfEvent(bal, proxy, topic);
 
-	event_transactions_by_block = {};
-	for event_name in event_data:
-		idx = 0;
-		for event in event_data[event_name]:
-			block = int(event["blockNumber"], 16);
-			event_transactions_by_block[block] = event["transactionHash"]
+		event_transactions_by_block = {};
+		for event_name in event_data:
+			idx = 0;
+			for event in event_data[event_name]:
+				block = int(event["blockNumber"], 16);
+				event_transactions_by_block[block] = event["transactionHash"]
 
-	sorted_txns = list(event_transactions_by_block.keys());
-	sorted_txns.sort();
+		sorted_txns = list(event_transactions_by_block.keys());
+		sorted_txns.sort();
 
+		safe_info = {
+			"owners":set(),
+			"threshold":None
+		}
 
-	safe_info = {
-		"owners":set(),
-		"threshold":None
-	}
+		for block in sorted_txns:
+			tx_hash = event_transactions_by_block[block];
+			receipt = bal.web3.eth.getTransactionReceipt(tx_hash);
 
-	for block in sorted_txns:
-		tx_hash = event_transactions_by_block[block];
-		receipt = bal.web3.eth.getTransactionReceipt(tx_hash);
+			with Suppressor():
+				logs_safe_setup = safe.events.SafeSetup().processReceipt(receipt);
+				logs_change_threshold = safe.events.ChangedThreshold().processReceipt(receipt);
+				logs_added_owner = safe.events.AddedOwner().processReceipt(receipt);
+				logs_removed_owner = safe.events.RemovedOwner().processReceipt(receipt);
 
-		with Suppressor():
-			logs_safe_setup = safe.events.SafeSetup().processReceipt(receipt);
-			logs_change_threshold = safe.events.ChangedThreshold().processReceipt(receipt);
-			logs_added_owner = safe.events.AddedOwner().processReceipt(receipt);
-			logs_removed_owner = safe.events.RemovedOwner().processReceipt(receipt);
+			if len(logs_safe_setup) > 0:
+				for log in logs_safe_setup:
+					owners = log["args"]["owners"];
+					for owner in owners:
+						safe_info["owners"].add(owner);
+					safe_info["threshold"] = log["args"]["threshold"];
 
-		if len(logs_safe_setup) > 0:
-			for log in logs_safe_setup:
-				owners = log["args"]["owners"];
-				for owner in owners:
-					safe_info["owners"].add(owner);
-				safe_info["threshold"] = log["args"]["threshold"];
-
-		if len(logs_change_threshold) > 0:
-			for log in logs_change_threshold:
-				safe_info["threshold"] = log["args"]["threshold"];
-		if len(logs_added_owner) > 0:
-			for log in logs_added_owner:
-				safe_info["owners"].add(log["args"]["owner"]);
-		if len(logs_removed_owner) > 0:
-			for log in logs_removed_owner:
-				safe_info["owners"].remove(log["args"]["owner"]);
+			if len(logs_change_threshold) > 0:
+				for log in logs_change_threshold:
+					safe_info["threshold"] = log["args"]["threshold"];
+			if len(logs_added_owner) > 0:
+				for log in logs_added_owner:
+					safe_info["owners"].add(log["args"]["owner"]);
+			if len(logs_removed_owner) > 0:
+				for log in logs_removed_owner:
+					safe_info["owners"].remove(log["args"]["owner"]);
 	return(safe_info);
 
 def main():
-	network = "avalanche";
+	network = "mainnet";
 	verbose = False;
 
 	customConfig = None;
@@ -424,8 +512,12 @@ def main():
 		if not is_eoa:
 			# Get ABI from Etherscan
 			abi = etherscanApiUrlGetAbi(bal, contract);
-
 			source_code = etherscanApiUrlGetSourceCode(bal, contract);
+
+			if abi is None or source_code is None:
+				print("Contract", contract, "may be unverified!")
+				continue;
+
 			code = source_code[0];
 			contract_name = code["ContractName"];
 
@@ -444,8 +536,8 @@ def main():
 			addresses.extend(output_addresses);
 			labels.extend(output_labels);
 
-			# Check to see if contract is an OZ TimelockController
-			(output_addresses, output_labels) = getTimelockControllerProposers(bal, contract, abi);
+			# Find active roles
+			(output_addresses, output_labels) = findActiveRoles(bal, contract, abi, source_code);
 			addresses.extend(output_addresses);
 			labels.extend(output_labels);
 
@@ -458,9 +550,12 @@ def main():
 			for a,l in zip(addresses, labels):
 				if "implementation" in l.lower():
 					proxy_abi = etherscanApiUrlGetAbi(bal, a);
-					(output_addresses, output_labels) = findAddressesGenericContract(mc, contract, proxy_abi);
-					addresses.extend(output_addresses);
-					labels.extend(output_labels);
+					if proxy_abi is None:
+						print("Contract", a, "may be unverified!")
+					else:
+						(output_addresses, output_labels) = findAddressesGenericContract(mc, contract, proxy_abi);
+						addresses.extend(output_addresses);
+						labels.extend(output_labels);
 
 		name_string = contract_name + "\n";
 		if not ens_name is None:
