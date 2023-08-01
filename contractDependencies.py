@@ -104,6 +104,30 @@ def findAddressesGenericContract(mc, contract, abi):
 				print("\t\t" + address);
 		return(filtered_addresses, filtered_fn_names);
 
+def findHardCodedAddresses(source_code):
+	addresses = [];
+	names = [];
+
+	for c in source_code:
+		sources = json.loads(c["SourceCode"][1:-1])["sources"]; #need to remove leading/trailing '{', '}'
+		for key in sources:
+			source = sources[key]["content"];
+			for line in source.splitlines():
+				if "address" in line and "constant" in line:
+
+					# get const address
+					elements = line.split(";")
+					address = elements[0].split()[-1];
+
+					# get name of const address
+					elements = line.split("=")
+					name = elements[0].strip().split()[-1];
+
+					addresses.append(address);
+					names.append(name);
+
+	return(addresses, names);
+
 def generateEventTopic(bal, name, inputs):
 	arguments = []
 	for element in inputs:
@@ -403,6 +427,11 @@ def main():
 
 			# Find all downstream addresses
 			(output_addresses, output_labels) = findAddressesGenericContract(mc, contract, abi);
+			addresses.extend(output_addresses);
+			labels.extend(output_labels);
+
+			# Find hardcoded addresses
+			(output_addresses, output_labels) = findHardCodedAddresses(source_code);
 			addresses.extend(output_addresses);
 			labels.extend(output_labels);
 
