@@ -492,9 +492,14 @@ def main():
 									_allowFailure=True);
 	ns = ENS.fromWeb3(bal.web3);
 
+	visited = set();
 	# Iterate through all contracts
 	# Note: additional contracts are added to this list as they are found
 	for contract in contracts:
+		if contract.lower() in visited:
+			continue;
+		visited.add(contract.lower());
+
 		print("Investigating address:", contract);
 		addresses = [];
 		labels = [];
