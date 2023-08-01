@@ -1,5 +1,6 @@
 import json
 import sys
+import os
 
 import balpy
 from multicaller import multicaller
@@ -92,7 +93,7 @@ def findAddressesGenericContract(mc, contract, abi):
 		filtered_fn_names = [];
 
 		for a, n in zip(addresses, fn_names):
-			if not a == ZERO_ADDRESS:
+			if not a == ZERO_ADDRESS and len(a) > 0:
 				filtered_addresses.append(a);
 				filtered_fn_names.append(n);
 
@@ -345,8 +346,12 @@ def getGnosisSafeOwners(bal, contract, proxy):
 	return(safe_info);
 
 def main():
-	network = "mainnet";
+	network = "avalanche";
 	verbose = False;
+
+	customConfig = None;
+	if network in ["avalanche"]:
+		customConfig = os.path.join("customConfig",network + ".json");
 
 	if not len(sys.argv) == 2:
 		print("Usage: python", sys.argv[0], "<contract_address>");
@@ -363,7 +368,7 @@ def main():
 	G.add_node(root_contract);
 
 	# initialize balpy, multicaller
-	bal = balpy.balpy.balpy(network);
+	bal = balpy.balpy.balpy(network, customConfigFile=customConfig);
 	mc = multicaller.multicaller(	_chainId=bal.networkParams[network]["id"],
 									_web3=bal.web3,
 									_maxRetries=5,
@@ -379,7 +384,10 @@ def main():
 		labels = [];
 		
 		is_eoa = len(bal.web3.eth.get_code(checksum(bal, contract))) == 0;
-		ens_name = ns.name(contract);
+		ens_name = None;
+		if network == "mainnet":
+			ens_name = ns.name(contract);
+
 		contract_name = "Externally Owned Account";
 
 		if not ens_name is None:
@@ -422,9 +430,10 @@ def main():
 
 		# Add all discovered addresses to the graph
 		for address, label in zip(addresses, labels):
-			contracts.append(address);
-			G.add_node(address);
-			G.add_edge(contract, address, label=label);
+			if not address in contracts:
+				contracts.append(address);
+				G.add_node(address);
+				G.add_edge(contract, address, label=label);
 
 		print();
 
