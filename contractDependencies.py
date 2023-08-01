@@ -421,6 +421,14 @@ def main():
 			addresses.extend(output_addresses);
 			labels.extend(output_labels);
 
+			# Read as Proxy
+			for a,l in zip(addresses, labels):
+				if "implementation" in l.lower():
+					proxy_abi = etherscanApiUrlGetAbi(bal, a);
+					(output_addresses, output_labels) = findAddressesGenericContract(mc, contract, proxy_abi);
+					addresses.extend(output_addresses);
+					labels.extend(output_labels);
+
 		name_string = contract_name + "\n";
 		if not ens_name is None:
 			 name_string += ens_name + " (" + contract + ")";
