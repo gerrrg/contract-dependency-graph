@@ -125,6 +125,10 @@ def findHardCodedAddresses(source_code):
 
 					addresses.append(address);
 					names.append(name);
+	if len(names) > 0:
+		print("\tFound", len(names), "hardcoded addresses:")
+		for a,n in zip(addresses,names):
+			print("\t\t" + n, a)
 
 	return(addresses, names);
 
