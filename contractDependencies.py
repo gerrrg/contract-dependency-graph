@@ -105,9 +105,13 @@ def findAddressesGenericContract(mc, contract, abi):
 		filtered_fn_names = [];
 
 		for a, n in zip(addresses, fn_names):
-			if not a == ZERO_ADDRESS and len(a) > 0:
-				filtered_addresses.append(a);
-				filtered_fn_names.append(n);
+			try:
+				if not a == ZERO_ADDRESS and len(a) > 0:
+					filtered_addresses.append(a);
+					filtered_fn_names.append(n);
+			except Exception as e:
+				print(e);
+				print(a);
 
 		num_addresses = len(filtered_addresses);
 		if num_addresses > 0:
@@ -233,43 +237,45 @@ def analyzeEip1967ProxyContract(bal, contract, abi):
 		isProxyContract = False;
 		addresses = [];
 		labels = [];
-		for fn in abi:
-			if fn["type"] == "constructor" or not "inputs" in fn:
-				continue;
-			elif fn["name"] == "Upgraded" and fn["inputs"][0]["name"] == "implementation":
-				isProxyContract = True;
-				break;
-		
-		if isProxyContract:
+
+		w3 = bal.web3;
+
+		# bytes32(uint256(keccak256('eip1967.proxy.admin')) - 1)
+		admin_slot = "0xb53127684a568b3173ae13b9f8a6016e243e63b6e8ee1178d6a717850b5d6103";
+		admin_data = str(getStorageAtSlot(w3, contract, admin_slot));
+		if not admin_data == ZERO_BYTES:
+			admin_address = bytes32ToAddress(admin_data);
+			addresses.append(admin_address);
+			labels.append("Proxy Admin");
 			print("\tContract is an EIP1967 Proxy!");
-			# address = asdf;
-			w3 = bal.web3;
-			# bytes32(uint256(keccak256('eip1967.proxy.implementation')) - 1)
-			implementation_slot = "0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc";
-			impl_data = str(getStorageAtSlot(w3, contract, implementation_slot));
-			if not impl_data == ZERO_BYTES:
-				impl_address = bytes32ToAddress(impl_data);
-				addresses.append(impl_address);
-				labels.append("Proxy Implementation");
-				print("\t\tFound Implementation:", impl_address);
+			print("\t\tFound Admin:", admin_address);
 
-			# bytes32(uint256(keccak256('eip1967.proxy.beacon')) - 1)
-			beacon_slot = "0xa3f0ad74e5423aebfd80d3ef4346578335a9a72aeaee59ff6cb3582b35133d50";
-			beacon_data = str(getStorageAtSlot(w3, contract, beacon_slot));
-			if not beacon_data == ZERO_BYTES:
-				beacon_address = bytes32ToAddress(beacon_data);
-				addresses.append(beacon_address);
-				labels.append("Proxy Beacon");
-				print("\t\tFound Beacon:", beacon_address);
+		# bytes32(uint256(keccak256('eip1967.proxy.beacon')) - 1)
+		beacon_slot = "0xa3f0ad74e5423aebfd80d3ef4346578335a9a72aeaee59ff6cb3582b35133d50";
+		beacon_data = str(getStorageAtSlot(w3, contract, beacon_slot));
+		beacon_address = None;
+		if not beacon_data == ZERO_BYTES:
+			beacon_address = bytes32ToAddress(beacon_data);
+			addresses.append(beacon_address);
+			labels.append("Proxy Beacon");
+			print("\tContract is an EIP1967 Proxy!");
+			print("\t\tFound Beacon:", beacon_address);
 
-			# bytes32(uint256(keccak256('eip1967.proxy.admin')) - 1)
-			admin_slot = "0xb53127684a568b3173ae13b9f8a6016e243e63b6e8ee1178d6a717850b5d6103";
-			admin_data = str(getStorageAtSlot(w3, contract, admin_slot));
-			if not admin_data == ZERO_BYTES:
-				admin_address = bytes32ToAddress(admin_data);
-				addresses.append(admin_address);
-				labels.append("Proxy Admin");
-				print("\t\tFound Admin:", admin_address);
+		if not beacon_address is None:
+			contract = beacon_address;
+
+		# bytes32(uint256(keccak256('eip1967.proxy.implementation')) - 1)
+		implementation_slot = "0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc";
+		impl_data = str(getStorageAtSlot(w3, contract, implementation_slot));
+		if not impl_data == ZERO_BYTES:
+			impl_address = bytes32ToAddress(impl_data);
+			addresses.append(impl_address);
+			label = "Proxy Implementation"
+			if contract == beacon_address:
+				label += " Via Beacon"
+			labels.append(label);
+			print("\tContract is an EIP1967 Proxy!");
+			print("\t\tFound Implementation:", impl_address);
 
 		return(addresses, labels);
 
@@ -553,7 +559,7 @@ def main():
 
 			# Read as Proxy
 			for a,l in zip(addresses, labels):
-				if "implementation" in l.lower():
+				if "implementation" in l.lower() or "beacon" in l.lower():
 					proxy_abi = etherscanApiUrlGetAbi(bal, a);
 					if proxy_abi is None:
 						print("Contract", a, "may be unverified!")
